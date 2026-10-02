@@ -57,7 +57,8 @@ jobs:
       - name: Compilar APK Android (Debug)
         run: |
           cd android
-          ./gradlew assembleDebug --no-daemon --stacktrace
+          rm -rf .gradle
+          ./gradlew clean assembleDebug --no-daemon --stacktrace
 
       - name: Encontrar e Renomear APK
         run: |

@@ -9,6 +9,9 @@ coverage/
 !.env.example
 certs/
 data/library.json
-data/library.json
 data/metadata
-data 
+data
+.gradle/
+android/.gradle/
+android/app/build/
+android/build/

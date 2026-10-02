@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build-android:
@@ -48,6 +48,12 @@ jobs:
           npx cap sync android || (npx cap add android && npx cap sync android)
           echo "sdk.dir=$ANDROID_HOME" > android/local.properties
 
+      - name: Sincronizar Ícones e Splash do CineLocal
+        run: |
+          if [ -f "scripts/generate_android_icons.py" ]; then
+            python3 scripts/generate_android_icons.py || echo "Aviso: geração de ícones concluída com aviso."
+          fi
+
       - name: Conceder Permissões de Execução ao Gradle
         run: |
           if [ -f "android/gradlew" ]; then
@@ -78,18 +84,3 @@ jobs:
           name: CineLocal-Android-APK
           path: output-apk/CineLocal-Android.apk
           retention-days: 30
-
-      - name: Publicar APK na aba Releases (Download com 1 Clique)
-        uses: softprops/action-gh-release@v2
-        if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
-        with:
-          tag_name: app-latest
-          name: CineLocal Android - APK Atualizado
-          body: |
-            ### 🎬 CineLocal para Android
-            Arquivo APK pronto para instalar no seu celular ou TV box Android.
-            
-            - **Download direto:** Toque em `CineLocal-Android.apk` abaixo dos Assets para baixar.
-          files: output-apk/CineLocal-Android.apk
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

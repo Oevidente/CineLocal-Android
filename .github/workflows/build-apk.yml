@@ -37,13 +37,16 @@ jobs:
           java-version: '21'
           cache: 'gradle'
 
-      - name: Aceitar Licenças do Android SDK
+      - name: Configurar Android SDK e Licenças
         run: |
+          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-35" "build-tools;35.0.0" || true
 
       - name: Sincronizar Capacitor com Android
         run: |
           npx cap sync android || (npx cap add android && npx cap sync android)
+          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
 
       - name: Conceder Permissões de Execução ao Gradle
         run: |

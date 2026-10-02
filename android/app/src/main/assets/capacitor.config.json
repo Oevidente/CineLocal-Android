@@ -1,0 +1,13 @@
+{
+	"appId": "com.cinelocal.app",
+	"appName": "CineLocal",
+	"webDir": "dist",
+	"server": {
+		"androidScheme": "https",
+		"cleartext": true
+	},
+	"android": {
+		"allowMixedContent": true,
+		"backgroundColor": "#141414"
+	}
+}

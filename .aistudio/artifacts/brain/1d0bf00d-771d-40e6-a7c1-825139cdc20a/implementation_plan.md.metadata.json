@@ -1,0 +1,6 @@
+{
+  "summary":  "Plano arquitetural completo para migração do CineLocal para Android com suporte a APK nativo via Capacitor e GitHub Actions, preservando todas as funcionalidades de reprodução local, streaming HLS IPTV, WebTorrent, PWA instalável para PC/Android e publicação estática no GitHub Pages sem custos de banco de dados ou IA.",
+  "updatedAt":  "2026-10-02T00:10:39.366303061Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

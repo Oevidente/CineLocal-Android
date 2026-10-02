@@ -1,3 +1,5 @@
+import { GoogleCast, isNativeAndroid } from './services/nativeCast';
+
 const CAST_AVAILABILITY_EVENT = 'cinelocal-cast-available';
 
 let castConfigured = false;
@@ -17,6 +19,7 @@ export interface CastDiagnostic {
   isLocalHost: boolean;
   isSdkScriptLoaded: boolean;
   isContextReady: boolean;
+  isNativeAndroid: boolean;
   title: string;
   reason: string;
   solution: string;
@@ -30,34 +33,121 @@ export interface CastDiagnostic {
 export function getCastContext(): any | null {
   if (typeof window === 'undefined') return null;
 
+  // 1. Android Native Capacitor environment
+  if (isNativeAndroid()) {
+    return {
+      isNativeAndroid: true,
+      GoogleCast,
+    };
+  }
+
+  // 2. Browser Google Cast Web SDK
   const browserWindow = window as any;
   const castFramework = browserWindow.cast?.framework;
   const chromeCast = browserWindow.chrome?.cast;
 
-  if (!castFramework?.CastContext || !chromeCast?.media?.DEFAULT_MEDIA_RECEIVER_APP_ID) {
-    return null;
+  if (castFramework?.CastContext) {
+    try {
+      const context = castFramework.CastContext.getInstance();
+      if (!castConfigured && chromeCast?.media?.DEFAULT_MEDIA_RECEIVER_APP_ID) {
+        const options: Record<string, unknown> = {
+          receiverApplicationId: chromeCast.media.DEFAULT_MEDIA_RECEIVER_APP_ID,
+        };
+        if (chromeCast.AutoJoinPolicy?.ORIGIN_SCOPED) {
+          options.autoJoinPolicy = chromeCast.AutoJoinPolicy.ORIGIN_SCOPED;
+        }
+        context.setOptions(options);
+        castConfigured = true;
+      }
+      return context;
+    } catch (err) {
+      console.warn('[CineLocal Cast] Erro ao obter CastContext:', err);
+    }
   }
 
+  return null;
+}
+
+/**
+ * Triggers Google Cast via W3C Presentation API (supported natively on Android Chrome)
+ */
+export async function tryPresentationRequestCast(mediaUrl: string, mediaTitle?: string): Promise<boolean> {
+  if (typeof window === 'undefined') return false;
+
+  const PresReq = (window as any).PresentationRequest;
+  if (!PresReq) return false;
+
   try {
-    const context = castFramework.CastContext.getInstance();
-    if (!castConfigured) {
-      const options: Record<string, unknown> = {
-        receiverApplicationId: chromeCast.media.DEFAULT_MEDIA_RECEIVER_APP_ID,
-      };
-      if (chromeCast.AutoJoinPolicy?.ORIGIN_SCOPED) {
-        options.autoJoinPolicy = chromeCast.AutoJoinPolicy.ORIGIN_SCOPED;
-      }
-      context.setOptions(options);
-      castConfigured = true;
+    const defaultReceiverAppId = 'CC1AD845'; // Google Cast Default Media Receiver
+    const presentationUrls = [
+      `https://google.com/cast#__castAppId__=${defaultReceiverAppId}`,
+      `cast:${defaultReceiverAppId}`,
+    ];
+    const request = new PresReq(presentationUrls);
+    const connection = await request.start();
+    if (connection) {
+      try {
+        const payload = JSON.stringify({
+          type: 'LOAD',
+          media: {
+            contentId: mediaUrl,
+            contentType: 'video/mp4',
+            streamType: 'BUFFERED',
+            metadata: {
+              title: mediaTitle || 'CineLocal',
+            },
+          },
+        });
+        connection.send(payload);
+      } catch {}
+      return true;
     }
-    return context;
-  } catch (err) {
-    console.warn('[CineLocal Cast] Erro ao obter CastContext:', err);
-    return null;
+  } catch (err: any) {
+    if (err?.name === 'NotFoundError' || err?.name === 'NotAllowedError' || err?.name === 'AbortError') {
+      return true;
+    }
   }
+  return false;
 }
 
 export function subscribeToCastAvailability(onChange: (context: any | null) => void): () => void {
+  // If running in Native Android app with Play Services Cast
+  if (isNativeAndroid()) {
+    let active = true;
+    let removeListeners: (() => void) | null = null;
+
+    GoogleCast.isAvailable()
+      .then(async (res) => {
+        if (!active) return;
+        if (res.isAvailable) {
+          onChange({ isNativeAndroid: true, GoogleCast, hasActiveSession: res.hasActiveSession, deviceName: res.deviceName });
+        } else {
+          onChange(null);
+        }
+
+        const sessionSub = await GoogleCast.addListener('castSessionStateChanged', (data) => {
+          if (!active) return;
+          if (data.isConnected) {
+            onChange({ isNativeAndroid: true, GoogleCast, isConnected: true, deviceName: data.deviceName });
+          } else {
+            onChange({ isNativeAndroid: true, GoogleCast, isConnected: false });
+          }
+        });
+
+        removeListeners = () => {
+          sessionSub.remove();
+        };
+      })
+      .catch(() => {
+        if (active) onChange(null);
+      });
+
+    return () => {
+      active = false;
+      if (removeListeners) removeListeners();
+    };
+  }
+
   let lastContext: any | null | undefined;
   let pollTimer: number | null = null;
   let stopTimer: number | null = null;
@@ -153,12 +243,12 @@ export function getCastErrorMessage(error: unknown): string {
   const code = (error as any)?.code || (error as any)?.errorCode;
   if (code === 'cancel' || code === 'CANCEL') return 'A conexão com o Chromecast foi cancelada.';
   if (code === 'receiver_unavailable' || code === 'RECEIVER_UNAVAILABLE') {
-    return 'Nenhum Chromecast disponível no momento. Verifique se o aparelho e seu dispositivo estão no mesmo Wi-Fi.';
+    return 'Nenhum Chromecast disponível no momento. Verifique se o aparelho e seu celular/PC estão no mesmo Wi-Fi.';
   }
   if (typeof (error as any)?.message === 'string' && (error as any).message.trim()) {
     return (error as any).message;
   }
-  return 'Não foi possível iniciar a transmissão direta para o Chromecast.';
+  return 'Não foi possível iniciar a transmissão para o Chromecast.';
 }
 
 /**
@@ -166,6 +256,36 @@ export function getCastErrorMessage(error: unknown): string {
  * actionable solutions when Google Cast Web API is unavailable.
  */
 export function getCastDiagnostics(): CastDiagnostic {
+  const native = isNativeAndroid();
+
+  if (native) {
+    return {
+      browser: 'Android App (Google Play Services Cast)',
+      isChrome: false,
+      isBrave: false,
+      isEdge: false,
+      isFirefox: false,
+      isSafari: false,
+      isAndroid: true,
+      isIOS: false,
+      isWebView: false,
+      isIframe: false,
+      isSecure: true,
+      isLocalHost: false,
+      isSdkScriptLoaded: true,
+      isContextReady: true,
+      isNativeAndroid: true,
+      title: 'Google Cast Nativo do Android Disponível',
+      reason: 'O aplicativo CineLocal utiliza o Google Cast Framework integrado ao Android.',
+      solution: 'Toque no botão Transmitir para abrir o seletor nativo de aparelhos e projetar na sua TV!',
+      suggestBraveToggle: false,
+      suggestChromeMenu: false,
+      suggestWebVideoCaster: false,
+      suggestVlc: false,
+      suggestHttps: false,
+    };
+  }
+
   if (typeof window === 'undefined') {
     return {
       browser: 'Desconhecido',
@@ -182,9 +302,10 @@ export function getCastDiagnostics(): CastDiagnostic {
       isLocalHost: false,
       isSdkScriptLoaded: false,
       isContextReady: false,
+      isNativeAndroid: false,
       title: 'Ambiente não suportado',
       reason: 'Execução fora do navegador.',
-      solution: 'Abra no Google Chrome ou em um navegador compatível.',
+      solution: 'Abra no Google Chrome ou no aplicativo Android.',
       suggestBraveToggle: false,
       suggestChromeMenu: false,
       suggestWebVideoCaster: false,
@@ -236,6 +357,7 @@ export function getCastDiagnostics(): CastDiagnostic {
       isLocalHost,
       isSdkScriptLoaded,
       isContextReady,
+      isNativeAndroid: false,
       title: 'Chromecast desativado no Navegador Brave',
       reason: 'O navegador Brave desativa a extensão nativa do Chromecast por padrão para proteger a privacidade na rede local.',
       solution: 'Para ativar: abra uma nova aba no Brave, acesse brave://settings/extensions, ligue a opção "Media router" e reinicie o Brave. Ou use as opções de transmissão direta abaixo (Web Video Caster / VLC).',
@@ -263,6 +385,7 @@ export function getCastDiagnostics(): CastDiagnostic {
       isLocalHost,
       isSdkScriptLoaded,
       isContextReady,
+      isNativeAndroid: false,
       title: 'Mozilla Firefox não possui Google Cast nativo',
       reason: 'A Mozilla não implementa a extensão Google Cast proprietária no Firefox para páginas web.',
       solution: 'Abra o CineLocal no Google Chrome para transmitir via Cast nativo, ou use o botão "Abrir no Web Video Caster / VLC" abaixo.',
@@ -290,36 +413,10 @@ export function getCastDiagnostics(): CastDiagnostic {
       isLocalHost,
       isSdkScriptLoaded,
       isContextReady,
+      isNativeAndroid: false,
       title: 'Transmissão no iPhone / iPad',
       reason: 'O iOS não permite a API Web do Google Cast em nenhum navegador, utilizando o protocolo Apple AirPlay.',
       solution: 'Use a opção "Transmissão Nativa / AirPlay" para enviar para sua Smart TV ou Apple TV, ou use o app Web Video Caster.',
-      suggestBraveToggle: false,
-      suggestChromeMenu: false,
-      suggestWebVideoCaster: true,
-      suggestVlc: true,
-      suggestHttps: false,
-    };
-  }
-
-  if (isWebView) {
-    return {
-      browser,
-      isChrome,
-      isBrave,
-      isEdge,
-      isFirefox,
-      isSafari,
-      isAndroid,
-      isIOS,
-      isWebView,
-      isIframe,
-      isSecure,
-      isLocalHost,
-      isSdkScriptLoaded,
-      isContextReady,
-      title: 'Transmissão a partir do Aplicativo Android',
-      reason: 'O aplicativo Android (WebView/APK) não compartilha a extensão do Chrome de Chromecast para páginas web.',
-      solution: 'Toque em "Abrir no Web Video Caster" ou "Abrir no VLC" abaixo para transmitir qualquer vídeo diretamente para a sua TV com 1 toque!',
       suggestBraveToggle: false,
       suggestChromeMenu: false,
       suggestWebVideoCaster: true,
@@ -344,9 +441,10 @@ export function getCastDiagnostics(): CastDiagnostic {
       isLocalHost,
       isSdkScriptLoaded,
       isContextReady,
+      isNativeAndroid: false,
       title: 'Google Cast no Celular exige HTTPS na rede local',
       reason: 'No celular Android, o Google Chrome desativa a API do Chromecast em endereços HTTP simples de IP (ex: http://192.168.x.x).',
-      solution: 'Abra pelo endereço seguro HTTPS gerado pelo CineLocal, ou use a opção "Abrir no Web Video Caster" abaixo para transmitir com total compatibilidade.',
+      solution: 'Abra pelo endereço seguro HTTPS gerado pelo CineLocal, ou instale o APK do CineLocal que possui o Google Cast nativo integrado!',
       suggestBraveToggle: false,
       suggestChromeMenu: false,
       suggestWebVideoCaster: true,
@@ -371,6 +469,7 @@ export function getCastDiagnostics(): CastDiagnostic {
       isLocalHost,
       isSdkScriptLoaded,
       isContextReady,
+      isNativeAndroid: false,
       title: 'Execução em Janela Embutida (iframe)',
       reason: 'O navegador restringe o acesso direto ao Chromecast quando o aplicativo está dentro de um frame embutido.',
       solution: 'Abra o CineLocal diretamente em uma nova aba do navegador para liberar a detecção do Chromecast.',
@@ -398,9 +497,10 @@ export function getCastDiagnostics(): CastDiagnostic {
     isLocalHost,
     isSdkScriptLoaded,
     isContextReady,
+    isNativeAndroid: false,
     title: 'Dispositivo Chromecast não localizado na rede',
     reason: 'O navegador não encontrou o Chromecast ou a extensão Cast ainda está procurando dispositivos na rede Wi-Fi.',
-    solution: 'Certifique-se de que o Chromecast e o computador estão na mesma rede Wi-Fi. No Google Chrome, você também pode clicar nos 3 pontinhos no canto superior direito do navegador ➔ "Transmitir..." para projetar na TV.',
+    solution: 'Certifique-se de que o Chromecast e o dispositivo estão na mesma rede Wi-Fi. No Google Chrome, você também pode clicar nos 3 pontinhos no canto superior direito do navegador ➔ "Transmitir..." para projetar na TV.',
     suggestBraveToggle: false,
     suggestChromeMenu: true,
     suggestWebVideoCaster: true,

@@ -28,6 +28,14 @@ import {
   Globe,
 } from 'lucide-react';
 import { IptvChannel } from '../types';
+import { GoogleCast, isNativeAndroid } from '../services/nativeCast';
+import {
+  getCastContext,
+  resolveCastBaseUrls,
+  tryNativeRemotePlayback,
+  tryPresentationRequestCast,
+  subscribeToCastAvailability,
+} from '../cast';
 
 interface IptvPlayerModalProps {
   channel: IptvChannel;
@@ -94,6 +102,12 @@ export const IptvPlayerModal: React.FC<IptvPlayerModalProps> = ({
   const [geoProfile, setGeoProfile] = useState<GeoProfile>('auto');
   const [showSettings, setShowSettings] = useState<boolean>(false);
   const [copiedUrl, setCopiedUrl] = useState<boolean>(false);
+
+  // Cast state
+  const [isCasting, setIsCasting] = useState<boolean>(false);
+  const [castDeviceName, setCastDeviceName] = useState<string | null>(null);
+  const [isCastLoading, setIsCastLoading] = useState<boolean>(false);
+  const castActiveRef = useRef<boolean>(false);
 
   // Zapping & UI
   const [showChannelList, setShowChannelList] = useState<boolean>(false);
@@ -282,6 +296,135 @@ export const IptvPlayerModal: React.FC<IptvPlayerModalProps> = ({
       }
     };
   }, [channel.id]);
+
+  const handleCast = async () => {
+    if (isCasting || castActiveRef.current) {
+      if (isNativeAndroid()) {
+        try {
+          await GoogleCast.disconnect();
+        } catch {}
+      }
+      setIsCasting(false);
+      castActiveRef.current = false;
+      setCastDeviceName(null);
+      return;
+    }
+
+    if (isNativeAndroid()) {
+      setIsCastLoading(true);
+      try {
+        await GoogleCast.showCastPicker();
+      } catch (err) {
+        console.warn('Erro ao abrir picker nativo de Cast:', err);
+      } finally {
+        setIsCastLoading(false);
+      }
+      return;
+    }
+
+    const context = getCastContext();
+    if (!context) {
+      const video = videoRef.current;
+      const nativeSuccess = await tryNativeRemotePlayback(video);
+      if (nativeSuccess) return;
+
+      try {
+        const castUrls = await resolveCastBaseUrls();
+        const castBase = castUrls[0] || window.location.origin;
+        const liveCastUrl = getStreamUrl(channel.url, 'proxy', uaProfile, geoProfile);
+        const fullCastUrl = liveCastUrl.startsWith('http') ? liveCastUrl : `${castBase}${liveCastUrl}`;
+        const presSuccess = await tryPresentationRequestCast(fullCastUrl, channel.name);
+        if (presSuccess) return;
+      } catch {}
+      return;
+    }
+
+    setIsCastLoading(true);
+    try {
+      let session = context.getCurrentSession?.();
+      if (!session) {
+        await context.requestSession();
+        session = context.getCurrentSession?.();
+      }
+      if (session) {
+        const device = session.getCastDevice?.();
+        setCastDeviceName(device?.friendlyName || 'Chromecast');
+        setIsCasting(true);
+        castActiveRef.current = true;
+
+        const castUrls = await resolveCastBaseUrls();
+        const castBase = castUrls[0] || window.location.origin;
+        const liveCastUrl = getStreamUrl(channel.url, 'proxy', uaProfile, geoProfile);
+        const fullCastUrl = liveCastUrl.startsWith('http') ? liveCastUrl : `${castBase}${liveCastUrl}`;
+
+        const mediaInfo = new (window as any).chrome.cast.media.MediaInfo(fullCastUrl, 'application/x-mpegURL');
+        mediaInfo.metadata = new (window as any).chrome.cast.media.GenericMediaMetadata();
+        mediaInfo.metadata.title = channel.name;
+        mediaInfo.metadata.subtitle = `CineLocal IPTV • ${channel.group || 'Ao Vivo'}`;
+
+        const request = new (window as any).chrome.cast.media.LoadRequest(mediaInfo);
+        request.autoplay = true;
+        await session.loadMedia(request);
+      }
+    } catch (err) {
+      console.warn('Erro ao transmitir canal para o Chromecast:', err);
+    } finally {
+      setIsCastLoading(false);
+    }
+  };
+
+  // Native Android Cast Listeners for IPTV
+  useEffect(() => {
+    if (!isNativeAndroid()) return;
+
+    let unsubs: Array<() => void> = [];
+
+    const setupNativeListeners = async () => {
+      try {
+        const stateSub = await GoogleCast.addListener('castSessionStateChanged', async (data) => {
+          if (data.isConnected) {
+            setIsCasting(true);
+            castActiveRef.current = true;
+            setCastDeviceName(data.deviceName || 'Chromecast');
+            if (videoRef.current && !videoRef.current.paused) {
+              videoRef.current.pause();
+            }
+
+            try {
+              const castUrls = await resolveCastBaseUrls();
+              const castBase = castUrls[0] || window.location.origin;
+              const liveCastUrl = getStreamUrl(channel.url, 'proxy', uaProfile, geoProfile);
+              const fullCastUrl = liveCastUrl.startsWith('http') ? liveCastUrl : `${castBase}${liveCastUrl}`;
+
+              await GoogleCast.loadMedia({
+                url: fullCastUrl,
+                title: channel.name,
+                subtitle: `CineLocal IPTV • ${channel.group || 'Ao Vivo'}`,
+                autoplay: true,
+                contentType: 'application/x-mpegURL',
+              });
+            } catch (err) {
+              console.error('[IPTV Native Cast] Erro ao carregar mídia:', err);
+            }
+          } else if (data.event === 'ended' || data.event === 'start_failed' || !data.isConnected) {
+            setIsCasting(false);
+            castActiveRef.current = false;
+            setCastDeviceName(null);
+          }
+        });
+
+        unsubs = [() => stateSub.remove()];
+      } catch (err) {
+        console.warn('Erro ao registrar listeners de Cast nativo no Android:', err);
+      }
+    };
+
+    setupNativeListeners();
+
+    return () => {
+      unsubs.forEach((unsub) => unsub());
+    };
+  }, [channel.id, channel.name, channel.group, channel.url, uaProfile, geoProfile, getStreamUrl]);
 
   // Handle controls auto-hide
   const handleMouseMove = () => {
@@ -599,6 +742,22 @@ export const IptvPlayerModal: React.FC<IptvPlayerModalProps> = ({
 
         {/* Top Right Actions */}
         <div className="flex items-center space-x-2 sm:space-x-3">
+          <button
+            onClick={handleCast}
+            disabled={isCastLoading}
+            className={`p-2.5 rounded-full transition-all cursor-pointer relative ${
+              isCasting
+                ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/30 ring-2 ring-blue-400'
+                : 'bg-black/60 hover:bg-white/20 text-neutral-300 hover:text-white'
+            }`}
+            title={isCasting ? `Transmitindo para ${castDeviceName || 'Chromecast'} (Toque para parar)` : 'Transmitir Canal para o Chromecast (Google Cast)'}
+          >
+            <Cast className={`w-5 h-5 ${isCasting ? 'animate-pulse' : ''}`} />
+            {isCasting && (
+              <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-emerald-400 rounded-full ring-2 ring-black animate-ping" />
+            )}
+          </button>
+
           <button
             onClick={() => setShowSettings(!showSettings)}
             className={`p-2.5 rounded-full transition-all cursor-pointer ${

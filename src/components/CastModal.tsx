@@ -229,93 +229,84 @@ export const CastModal: React.FC<CastModalProps> = ({
 
           {/* Quick Action Cards Grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {/* Card 1: Google Cast Direct (if ready) */}
-            {onTriggerGoogleCast && diagnostics.isContextReady && (
-              <button
-                type="button"
-                onClick={() => {
-                  onClose();
-                  onTriggerGoogleCast();
-                }}
-                className="col-span-1 sm:col-span-2 p-3.5 rounded-xl bg-gradient-to-r from-red-600 to-red-700 hover:from-red-500 hover:to-red-600 text-white font-semibold text-sm flex items-center justify-center space-x-2.5 shadow-lg shadow-red-950/40 transition-all cursor-pointer active:scale-[0.99]"
-              >
-                <Cast className="w-5 h-5 animate-pulse" />
-                <span>Iniciar Transmissão via Google Cast</span>
-              </button>
-            )}
-
-            {/* Card 2: Web Video Caster (Recommended for Smart TVs & Phones) */}
-            <div className="p-3.5 rounded-xl bg-neutral-900/90 border border-neutral-800 hover:border-neutral-700 transition flex flex-col justify-between space-y-3">
+            {/* Card 1: Google Cast Nativo (Android / Chrome) */}
+            <div className="p-3.5 rounded-xl bg-neutral-900/90 border border-neutral-800 hover:border-neutral-700 transition flex flex-col justify-between space-y-3 col-span-1 sm:col-span-2">
               <div>
                 <div className="flex items-center justify-between mb-1.5">
                   <div className="flex items-center space-x-2">
-                    <div className="w-7 h-7 rounded-lg bg-orange-500/20 text-orange-400 flex items-center justify-center font-bold text-xs">
-                      <Flame className="w-4 h-4" />
+                    <div className="w-8 h-8 rounded-lg bg-red-600/20 text-red-400 flex items-center justify-center font-bold text-xs">
+                      <Cast className="w-5 h-5" />
                     </div>
-                    <span className="font-bold text-white text-sm">Web Video Caster</span>
+                    <div>
+                      <span className="font-bold text-white text-sm">Google Cast / Chromecast</span>
+                      <p className="text-[11px] text-neutral-400">Projeção direta para Chromecast, Google TV e Android TV na mesma rede Wi-Fi.</p>
+                    </div>
                   </div>
-                  <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-emerald-950/90 text-emerald-400 border border-emerald-800/60">
-                    Recomendado
+                  <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-red-950 text-red-400 border border-red-800/60 shrink-0">
+                    Google Cast
                   </span>
                 </div>
-                <p className="text-[11px] text-neutral-400 leading-normal">
-                  Transmite para qualquer <strong>Chromecast, Smart TV (Samsung/LG), Roku ou Fire TV</strong> com legendas e áudio garantidos.
-                </p>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  onClick={handleOpenWebVideoCaster}
-                  className="flex-1 px-3 py-2 rounded-lg bg-orange-600 hover:bg-orange-500 text-white text-xs font-semibold flex items-center justify-center space-x-1.5 transition shadow cursor-pointer active:scale-95"
+                  onClick={() => {
+                    onClose();
+                    if (onTriggerGoogleCast) {
+                      onTriggerGoogleCast();
+                    }
+                  }}
+                  className="flex-1 min-w-[200px] px-4 py-2.5 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-bold flex items-center justify-center space-x-2 transition shadow-lg shadow-red-950/40 cursor-pointer active:scale-95"
                 >
-                  <Tv className="w-3.5 h-3.5" />
-                  <span>Abrir no App</span>
+                  <Cast className="w-4 h-4" />
+                  <span>Transmitir Agora no Chromecast</span>
                 </button>
-                <a
-                  href={
-                    diagnostics.isIOS
-                      ? 'https://apps.apple.com/app/web-video-cast-browser-to-tv/id1400863749'
-                      : 'https://play.google.com/store/apps/details?id=com.instantbits.cast.webvideo'
-                  }
-                  target="_blank"
-                  rel="noreferrer"
-                  className="px-2.5 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-xs transition"
-                  title="Baixar aplicativo gratuito na loja"
+                <button
+                  type="button"
+                  onClick={handleReloadSdk}
+                  className="px-3 py-2.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-xs font-semibold flex items-center space-x-1.5 transition cursor-pointer"
+                  title="Recarregar serviço do Google Cast"
                 >
-                  <ExternalLink className="w-3.5 h-3.5" />
-                </a>
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Redetectar</span>
+                </button>
               </div>
             </div>
 
-            {/* Card 3: VLC Media Player */}
+            {/* Card 2: Native Browser Remote Playback / AirPlay */}
             <div className="p-3.5 rounded-xl bg-neutral-900/90 border border-neutral-800 hover:border-neutral-700 transition flex flex-col justify-between space-y-3">
               <div>
                 <div className="flex items-center justify-between mb-1.5">
                   <div className="flex items-center space-x-2">
-                    <div className="w-7 h-7 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center font-bold text-xs">
-                      <Play className="w-4 h-4 fill-current" />
+                    <div className="w-7 h-7 rounded-lg bg-sky-500/20 text-sky-400 flex items-center justify-center font-bold text-xs">
+                      <Monitor className="w-4 h-4" />
                     </div>
-                    <span className="font-bold text-white text-sm">VLC Media Player</span>
+                    <span className="font-bold text-white text-sm">Seletor do Sistema</span>
                   </div>
-                  <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-neutral-800 text-neutral-300 border border-neutral-700">
-                    PC & Celular
+                  <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-sky-950 text-sky-400 border border-sky-800/60">
+                    Android / AirPlay
                   </span>
                 </div>
                 <p className="text-[11px] text-neutral-400 leading-normal">
-                  Abra no VLC e use <strong>Reprodução ➔ Renderizador</strong> para transmitir para seu Chromecast ou Smart TV.
+                  Abre o seletor nativo do sistema operacional (Android Cast, Smart TV DLNA ou AirPlay).
                 </p>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div>
                 <button
                   type="button"
-                  onClick={handleOpenVlc}
-                  className="flex-1 px-3 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold flex items-center justify-center space-x-1.5 transition shadow cursor-pointer active:scale-95"
+                  onClick={handleTryNativeCast}
+                  className="w-full px-3 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold flex items-center justify-center space-x-1.5 transition shadow cursor-pointer active:scale-95"
                 >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Abrir no VLC (.m3u)</span>
+                  <Radio className="w-3.5 h-3.5" />
+                  <span>Abrir Menu de Transmissão</span>
                 </button>
+                {nativeCastStatus && (
+                  <p className="text-[10px] text-sky-400 mt-1.5 text-center font-medium animate-pulse">
+                    {nativeCastStatus}
+                  </p>
+                )}
               </div>
             </div>
 

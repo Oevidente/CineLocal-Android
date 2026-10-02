@@ -35,8 +35,10 @@ import {
   resolveCastBaseUrls,
   subscribeToCastAvailability,
   tryNativeRemotePlayback,
+  tryPresentationRequestCast,
 } from '../cast';
 import { CastModal } from './CastModal';
+import { GoogleCast, isNativeAndroid } from '../services/nativeCast';
 
 interface TorrentPlayerProps {
   status: TorrentStatus;
@@ -269,6 +271,7 @@ export const TorrentPlayer: React.FC<TorrentPlayerProps> = ({
   const castCurrentTimeRef = useRef<number>(0);
   const isConnectingCastRef = useRef<boolean>(false);
   const isDisconnectingCastRef = useRef<boolean>(false);
+  const castActiveRef = useRef<boolean>(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -526,6 +529,14 @@ export const TorrentPlayer: React.FC<TorrentPlayerProps> = ({
     setIsCastLoading(true);
 
     try {
+      if (isNativeAndroid()) {
+        try {
+          await GoogleCast.disconnect();
+        } catch {}
+        restoreLocalFromCast();
+        return;
+      }
+
       const context = getCastContext();
       const session = castSessionRef.current || context?.getCurrentSession?.();
       const remoteMedia = castMediaRef.current || session?.getMediaSession?.();
@@ -558,11 +569,34 @@ export const TorrentPlayer: React.FC<TorrentPlayerProps> = ({
       return;
     }
 
+    if (isNativeAndroid()) {
+      setIsCastLoading(true);
+      try {
+        await GoogleCast.showCastPicker();
+      } catch (err) {
+        console.warn('Erro ao abrir picker nativo de Cast:', err);
+      } finally {
+        setIsCastLoading(false);
+      }
+      return;
+    }
+
     const context = getCastContext();
     if (!context) {
       const video = videoRef.current;
       const nativeSuccess = await tryNativeRemotePlayback(video);
       if (nativeSuccess) return;
+
+      try {
+        const castUrls = await resolveCastBaseUrls();
+        const castBase = castUrls[0] || window.location.origin;
+        const castMediaUrl = `${castBase}/api/torrent/stream/${status.infoHash}/${currentFileIdx}?cast=1`;
+        const presSuccess = await tryPresentationRequestCast(
+          castMediaUrl,
+          currentParsedEp?.cleanTitle || currentFile?.name || status.name,
+        );
+        if (presSuccess) return;
+      } catch {}
 
       setShowCastModal(true);
       return;
@@ -695,6 +729,70 @@ export const TorrentPlayer: React.FC<TorrentPlayerProps> = ({
       cleanupEvents();
     };
   }, [currentFileIdx, isCasting, restoreLocalFromCast]);
+
+  // Native Android Google Cast Event Listeners
+  useEffect(() => {
+    if (!isNativeAndroid()) return;
+
+    let unsubs: Array<() => void> = [];
+
+    const setupNativeListeners = async () => {
+      try {
+        const stateSub = await GoogleCast.addListener('castSessionStateChanged', async (data) => {
+          if (data.isConnected) {
+            setIsCasting(true);
+            castActiveRef.current = true;
+            setCastDeviceName(data.deviceName || 'Chromecast');
+            if (videoRef.current && !videoRef.current.paused) {
+              videoRef.current.pause();
+            }
+
+            try {
+              const castUrls = await resolveCastBaseUrls();
+              const castBase = castUrls[0] || window.location.origin;
+              const castMediaUrl = `${castBase}/api/torrent/stream/${status.infoHash}/${currentFileIdx}?cast=1`;
+              const pos = videoRef.current ? videoRef.current.currentTime : currentTime;
+
+              await GoogleCast.loadMedia({
+                url: castMediaUrl,
+                title: currentParsedEp?.cleanTitle || currentFile?.name || status.name,
+                subtitle: `CineLocal • ${status.name}`,
+                position: pos,
+                autoplay: isPlaying,
+                contentType: 'video/mp4',
+              });
+            } catch (err) {
+              console.error('[Torrent Native Cast] Erro ao carregar mídia:', err);
+            }
+          } else if (data.event === 'ended' || data.event === 'start_failed' || !data.isConnected) {
+            if (isCasting || castActiveRef.current) {
+              restoreLocalFromCast();
+            }
+          }
+        });
+
+        const progressSub = await GoogleCast.addListener('castMediaProgress', (data) => {
+          if (data.currentTime !== undefined && Number.isFinite(data.currentTime)) {
+            castCurrentTimeRef.current = data.currentTime;
+            setCurrentTime(data.currentTime);
+          }
+        });
+
+        unsubs = [
+          () => stateSub.remove(),
+          () => progressSub.remove(),
+        ];
+      } catch (err) {
+        console.warn('Erro ao registrar listeners de Cast nativo no Android:', err);
+      }
+    };
+
+    setupNativeListeners();
+
+    return () => {
+      unsubs.forEach((unsub) => unsub());
+    };
+  }, [currentFileIdx, currentFile?.name, currentParsedEp?.cleanTitle, isPlaying, status.infoHash, status.name, restoreLocalFromCast]);
 
   const streamUrl = `/api/torrent/stream/${status.infoHash}/${currentFileIdx}${forceTranscode ? '?transcode=1' : ''}`;
 

@@ -32,8 +32,10 @@ import {
   resolveCastBaseUrls,
   subscribeToCastAvailability,
   tryNativeRemotePlayback,
+  tryPresentationRequestCast,
 } from '../cast';
 import { localBlobRegistry, saveClientProgress } from '../services/clientStorage';
+import { GoogleCast, isNativeAndroid } from '../services/nativeCast';
 import { CastModal } from './CastModal';
 
 interface VideoPlayerProps {
@@ -612,6 +614,14 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     setIsCastLoading(true);
 
     try {
+      if (isNativeAndroid()) {
+        try {
+          await GoogleCast.disconnect();
+        } catch {}
+        restoreLocalAfterCast();
+        return;
+      }
+
       const context = castContextRef.current || getCastContext();
       const session = castSessionRef.current || context?.getCurrentSession?.();
       const remoteMedia = castMediaRef.current || session?.getMediaSession?.();
@@ -905,6 +915,18 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       return;
     }
 
+    if (isNativeAndroid()) {
+      setIsCastLoading(true);
+      try {
+        await GoogleCast.showCastPicker();
+      } catch (err: any) {
+        setCastError(err?.message || 'Falha ao abrir seletor do Chromecast');
+      } finally {
+        setIsCastLoading(false);
+      }
+      return;
+    }
+
     const context = castContextRef.current || getCastContext();
     if (!context) {
       // 1. Try native system picker (Remote Playback API / AirPlay)
@@ -914,7 +936,21 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         return;
       }
 
-      // 2. Open rich CastModal with direct alternatives
+      // 2. Try W3C Presentation API for Google Cast on Android Chrome
+      try {
+        const baseUrls = await resolveCastBaseUrls();
+        const targetBase = baseUrls[0] || window.location.origin;
+        const targetIsDirectMP4 = targetEpisode.extension === '.mp4' || targetEpisode.extension === '.webm';
+        const streamPath = targetIsDirectMP4
+          ? `/api/media/${targetMedia.id}/episode/${targetEpisode.id}/stream`
+          : `/api/media/${targetMedia.id}/episode/${targetEpisode.id}/hls/master.m3u8?audio=${targetAudioIndex}&cast=1`;
+        const presSuccess = await tryPresentationRequestCast(`${targetBase}${streamPath}`, targetMedia.title);
+        if (presSuccess) {
+          return;
+        }
+      } catch {}
+
+      // 3. Open Cast Control Hub
       setShowCastModal(true);
       return;
     }
@@ -1060,6 +1096,91 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     registerCastMedia,
     restoreLocalAfterCast,
   ]);
+
+  // Native Android Google Cast Event Listeners
+  useEffect(() => {
+    if (!isNativeAndroid()) return;
+
+    let unsubs: Array<() => void> = [];
+
+    const setupNativeListeners = async () => {
+      try {
+        const stateSub = await GoogleCast.addListener('castSessionStateChanged', async (data) => {
+          if (data.isConnected) {
+            setIsCasting(true);
+            castActiveRef.current = true;
+            setCastDeviceName(data.deviceName || 'Chromecast');
+            if (videoRef.current && !videoRef.current.paused) {
+              videoRef.current.pause();
+            }
+
+            // Load current media into Chromecast via native Android Cast plugin
+            try {
+              const baseUrls = await resolveCastBaseUrls();
+              const targetBaseUrl = baseUrls[0] || window.location.origin;
+              const targetIsDirectMP4 =
+                episode.extension === '.mp4' || episode.extension === '.webm';
+              const shouldUseHls =
+                !targetIsDirectMP4 || isForceTranscode || (episode.selectedAudioIndex ?? 0) > 0;
+              const pos = getLocalPlaybackTime();
+
+              const streamPath = shouldUseHls
+                ? `/api/media/${media.id}/episode/${episode.id}/hls/master.m3u8?audio=${episode.selectedAudioIndex ?? 0}&cast=1${
+                    pos > 0 ? `&seek=${encodeURIComponent(pos)}` : ''
+                  }${isForceTranscode ? '&transcode=1' : ''}`
+                : `/api/media/${media.id}/episode/${episode.id}/stream`;
+
+              const fullMediaUrl = `${targetBaseUrl}${streamPath}`;
+              const subTitle =
+                media.kind === 'series'
+                  ? `Temporada ${episode.seasonNumber} · Episódio ${episode.episodeNumber} - ${episode.title}`
+                  : episode.title;
+
+              await GoogleCast.loadMedia({
+                url: fullMediaUrl,
+                title: media.title,
+                subtitle: subTitle,
+                position: shouldUseHls ? 0 : pos,
+                autoplay: isPlaying,
+                contentType: shouldUseHls ? 'application/x-mpegURL' : 'video/mp4',
+              });
+            } catch (err: any) {
+              console.error('[Native Cast] Erro ao carregar mídia:', err);
+              setCastError('Erro ao carregar mídia no Chromecast.');
+            }
+          } else if (data.event === 'ended' || data.event === 'start_failed' || !data.isConnected) {
+            if (isCasting || castActiveRef.current) {
+              restoreLocalAfterCast();
+            }
+          }
+        });
+
+        const progressSub = await GoogleCast.addListener('castMediaProgress', (data) => {
+          if (data.currentTime !== undefined && Number.isFinite(data.currentTime)) {
+            castCurrentTimeRef.current = data.currentTime;
+            setCurrentTime(data.currentTime);
+          }
+          if (data.duration !== undefined && Number.isFinite(data.duration) && data.duration > 0) {
+            setDuration(data.duration);
+          }
+          if (data.isPlaying !== undefined) {
+            setIsPlaying(data.isPlaying);
+          }
+        });
+
+        unsubs.push(() => stateSub.remove());
+        unsubs.push(() => progressSub.remove());
+      } catch (e) {
+        console.warn('Erro ao configurar listeners do Cast nativo:', e);
+      }
+    };
+
+    setupNativeListeners();
+
+    return () => {
+      unsubs.forEach((fn) => fn());
+    };
+  }, [episode, getLocalPlaybackTime, isForceTranscode, isPlaying, media, restoreLocalAfterCast]);
 
   useEffect(() => {
     const nextAudioIndex = episode.selectedAudioIndex ?? 0;
@@ -1402,6 +1523,17 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     methodName: 'play' | 'pause' | 'seek' | 'setVolume' | 'editTracksInfo',
     request?: any,
   ): boolean => {
+    if (isNativeAndroid()) {
+      try {
+        if (methodName === 'play') GoogleCast.play();
+        else if (methodName === 'pause') GoogleCast.pause();
+        return true;
+      } catch (err) {
+        setCastError(getCastErrorMessage(err));
+        return false;
+      }
+    }
+
     const remoteMedia = castMediaRef.current;
     const method = remoteMedia?.[methodName];
     if (!isCasting || !remoteMedia || typeof method !== 'function')
@@ -1422,6 +1554,11 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   };
 
   const setCastVolume = (level: number, muted: boolean): boolean => {
+    if (isNativeAndroid()) {
+      GoogleCast.setVolume({ volume: muted ? 0 : level });
+      return true;
+    }
+
     const mediaApi = (window as any).chrome?.cast?.media;
     if (!mediaApi?.Volume || !mediaApi?.VolumeRequest) return false;
     const remoteVolume = new mediaApi.Volume();
@@ -1433,6 +1570,17 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
   const togglePlayback = () => {
     if (isCasting) {
+      if (isNativeAndroid()) {
+        if (isPlaying) {
+          GoogleCast.pause();
+          setIsPlaying(false);
+        } else {
+          GoogleCast.play();
+          setIsPlaying(true);
+        }
+        return;
+      }
+
       if (!castMediaRef.current) return;
       const mediaApi = (window as any).chrome?.cast?.media;
       const request = isPlaying
@@ -1576,6 +1724,17 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     );
 
     if (isCasting) {
+      if (isNativeAndroid()) {
+        GoogleCast.seek({ position: clampedSec });
+        castCurrentTimeRef.current = clampedSec;
+        setCurrentTime(clampedSec);
+        saveProgress(clampedSec, duration, false, false);
+        setTimeout(() => {
+          isSeekingRef.current = false;
+        }, 600);
+        return;
+      }
+
       if (!castMediaRef.current) {
         isSeekingRef.current = false;
         return;

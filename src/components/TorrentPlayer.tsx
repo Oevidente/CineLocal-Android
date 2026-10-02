@@ -34,7 +34,9 @@ import {
   getCastErrorMessage,
   resolveCastBaseUrls,
   subscribeToCastAvailability,
+  tryNativeRemotePlayback,
 } from '../cast';
+import { CastModal } from './CastModal';
 
 interface TorrentPlayerProps {
   status: TorrentStatus;
@@ -260,6 +262,7 @@ export const TorrentPlayer: React.FC<TorrentPlayerProps> = ({
   const [isCasting, setIsCasting] = useState(false);
   const [isCastLoading, setIsCastLoading] = useState(false);
   const [castDeviceName, setCastDeviceName] = useState<string | null>(null);
+  const [showCastModal, setShowCastModal] = useState<boolean>(false);
   const castSessionRef = useRef<any>(null);
   const castMediaRef = useRef<any>(null);
   const castStartTimeRef = useRef<number>(0);
@@ -556,7 +559,14 @@ export const TorrentPlayer: React.FC<TorrentPlayerProps> = ({
     }
 
     const context = getCastContext();
-    if (!context) return;
+    if (!context) {
+      const video = videoRef.current;
+      const nativeSuccess = await tryNativeRemotePlayback(video);
+      if (nativeSuccess) return;
+
+      setShowCastModal(true);
+      return;
+    }
     setIsCastLoading(true);
     isConnectingCastRef.current = true;
 
@@ -624,6 +634,10 @@ export const TorrentPlayer: React.FC<TorrentPlayerProps> = ({
     } catch (err: any) {
       console.error('Erro ao transmitir para o Cast:', err);
       restoreLocalFromCast();
+      const code = err?.code || err?.errorCode;
+      if (code !== 'cancel' && code !== 'CANCEL') {
+        setShowCastModal(true);
+      }
     } finally {
       setIsCastLoading(false);
       isConnectingCastRef.current = false;
@@ -1061,21 +1075,19 @@ export const TorrentPlayer: React.FC<TorrentPlayerProps> = ({
             </div>
 
             {/* Cast Button */}
-            {castAvailable && (
-              <button
-                onClick={handleStartCast}
-                disabled={isCastLoading}
-                className={`p-2.5 rounded-xl border transition flex items-center gap-1.5 text-xs font-semibold cursor-pointer ${
-                  isCasting
-                    ? 'bg-amber-600 border-amber-500 text-white'
-                    : 'bg-zinc-900/80 border-zinc-700 hover:bg-zinc-800 text-zinc-300'
-                }`}
-                title={isCasting ? `Transmitindo para ${castDeviceName || 'Chromecast'}` : 'Transmitir para TV'}
-              >
-                {isCastLoading ? <Loader2 className="w-4 h-4 animate-spin text-amber-400" /> : <CastIcon className="w-4 h-4" />}
-                <span>{isCasting ? castDeviceName || 'Casting' : 'Cast'}</span>
-              </button>
-            )}
+            <button
+              onClick={handleStartCast}
+              disabled={isCastLoading}
+              className={`p-2.5 rounded-xl border transition flex items-center gap-1.5 text-xs font-semibold cursor-pointer ${
+                isCasting
+                  ? 'bg-amber-600 border-amber-500 text-white'
+                  : 'bg-zinc-900/80 border-zinc-700 hover:bg-zinc-800 text-zinc-300'
+              }`}
+              title={isCasting ? `Transmitindo para ${castDeviceName || 'Chromecast'}` : 'Transmitir para TV / Chromecast'}
+            >
+              {isCastLoading ? <Loader2 className="w-4 h-4 animate-spin text-amber-400" /> : <CastIcon className="w-4 h-4" />}
+              <span>{isCasting ? castDeviceName || 'Casting' : 'Cast'}</span>
+            </button>
 
             {/* Episodes Drawer Trigger (if Series) */}
             {parsedEpisodes.length > 1 && (
@@ -1418,6 +1430,21 @@ export const TorrentPlayer: React.FC<TorrentPlayerProps> = ({
           </div>
         </div>
       )}
+
+      {/* Cast Modal */}
+      <CastModal
+        isOpen={showCastModal}
+        onClose={() => setShowCastModal(false)}
+        mediaTitle={currentParsedEp?.cleanTitle || currentFile?.name || status.name}
+        mediaSubtitle={`Torrent • ${status.name}`}
+        streamPath={`/api/torrent/stream/${status.infoHash}/${currentFileIdx}?cast=1`}
+        m3uExportUrl={`/api/torrent/export-m3u/${status.infoHash}/${currentFileIdx}`}
+        videoElement={videoRef.current}
+        castAvailable={castAvailable}
+        onTriggerGoogleCast={() => {
+          void handleStartCast();
+        }}
+      />
     </div>
   );
 };

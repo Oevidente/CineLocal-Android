@@ -31,8 +31,10 @@ import {
   getCastErrorMessage,
   resolveCastBaseUrls,
   subscribeToCastAvailability,
+  tryNativeRemotePlayback,
 } from '../cast';
 import { localBlobRegistry, saveClientProgress } from '../services/clientStorage';
+import { CastModal } from './CastModal';
 
 interface VideoPlayerProps {
   media: MediaItem;
@@ -353,6 +355,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [isCastLoading, setIsCastLoading] = useState<boolean>(false);
   const [castDeviceName, setCastDeviceName] = useState<string | null>(null);
   const [castError, setCastError] = useState<string | null>(null);
+  const [showCastModal, setShowCastModal] = useState<boolean>(false);
 
   const hlsRef = useRef<Hls | null>(null);
   const castContextRef = useRef<any>(null);
@@ -373,7 +376,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : '';
   const isAndroidMobile = /Android/i.test(userAgent);
   const isAppleMobile = /iPhone|iPad|iPod/i.test(userAgent);
-  const showCastButton = castAvailable || isAndroidMobile || isAppleMobile;
+  const showCastButton = true;
   const getLocalPlaybackTime = () => {
     const video = videoRef.current;
     if (!video || !Number.isFinite(video.currentTime)) return currentTime;
@@ -904,26 +907,15 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
     const context = castContextRef.current || getCastContext();
     if (!context) {
-      const hostname = window.location.hostname.toLowerCase();
-      const isLocalHost =
-        hostname === 'localhost' ||
-        hostname === '127.0.0.1' ||
-        hostname === '::1' ||
-        hostname === '[::1]';
-
-      if (isAppleMobile) {
-        setCastError(
-          'O Chrome no iPhone/iPad não oferece suporte ao Google Cast pela web. Use o Chrome em um celular Android ou um computador compatível.',
-        );
-      } else if (window.location.protocol !== 'https:' && !isLocalHost) {
-        setCastError(
-          'No celular, o Google Cast exige HTTPS. Abra o CineLocal por um endereço HTTPS na rede local para transmitir.',
-        );
-      } else {
-        setCastError(
-          'O Google Cast não está disponível neste navegador. Use o Google Chrome e verifique se o Chromecast está na mesma rede.',
-        );
+      // 1. Try native system picker (Remote Playback API / AirPlay)
+      const video = videoRef.current;
+      const nativeSuccess = await tryNativeRemotePlayback(video);
+      if (nativeSuccess) {
+        return;
       }
+
+      // 2. Open rich CastModal with direct alternatives
+      setShowCastModal(true);
       return;
     }
 
@@ -953,9 +945,16 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         requestedPosition,
         requestedAutoplay,
       );
-    } catch (error) {
+    } catch (error: any) {
+      const code = error?.code || error?.errorCode;
+      if (code === 'cancel' || code === 'CANCEL') {
+        setIsCastLoading(false);
+        isConnectingCastRef.current = false;
+        return;
+      }
       setCastError(getCastErrorMessage(error));
       restoreLocalAfterCast();
+      setShowCastModal(true);
     } finally {
       setIsCastLoading(false);
       isConnectingCastRef.current = false;
@@ -2040,12 +2039,20 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       {castError && (
         <button
           type="button"
-          onClick={() => setCastError(null)}
-          className="absolute top-20 left-1/2 -translate-x-1/2 z-50 max-w-[min(90vw,32rem)] rounded-lg border border-amber-500/40 bg-neutral-950/95 px-4 py-3 text-left text-xs text-amber-200 shadow-xl"
-          title="Fechar aviso"
+          onClick={() => {
+            setCastError(null);
+            setShowCastModal(true);
+          }}
+          className="absolute top-20 left-1/2 -translate-x-1/2 z-50 max-w-[min(90vw,36rem)] rounded-xl border border-amber-500/50 bg-neutral-950/95 px-4 py-3 text-left text-xs text-amber-200 shadow-2xl flex items-center justify-between gap-3 group cursor-pointer animate-in fade-in slide-in-from-top-3 duration-200"
+          title="Ver opções de transmissão para TV"
         >
-          <span className="font-semibold text-amber-300">Chromecast:</span>{' '}
-          {castError}
+          <div className="flex-1">
+            <span className="font-bold text-amber-300">Chromecast:</span>{' '}
+            {castError}
+          </div>
+          <span className="shrink-0 px-2.5 py-1 rounded-lg bg-amber-500/20 text-amber-300 font-bold text-[11px] group-hover:bg-amber-500/30 transition border border-amber-500/30">
+            Ver Opções de Transmissão &rarr;
+          </span>
         </button>
       )}
 
@@ -2530,6 +2537,29 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Cast & Connect to TV Modal */}
+      <CastModal
+        isOpen={showCastModal}
+        onClose={() => setShowCastModal(false)}
+        mediaTitle={media.title}
+        mediaSubtitle={
+          media.kind === 'series'
+            ? `Temporada ${episode.seasonNumber} · Episódio ${episode.episodeNumber} - ${episode.title}`
+            : episode.title
+        }
+        streamPath={
+          !isDirectMP4 || isForceTranscode || selectedAudioIndex > 0
+            ? `/api/media/${media.id}/episode/${episode.id}/hls/master.m3u8?audio=${selectedAudioIndex}&cast=1`
+            : `/api/media/${media.id}/episode/${episode.id}/stream`
+        }
+        m3uExportUrl={`/api/media/${media.id}/episode/${episode.id}/export-m3u`}
+        videoElement={videoRef.current}
+        castAvailable={castAvailable}
+        onTriggerGoogleCast={() => {
+          void handleCast();
+        }}
+      />
     </div>
   );
 };

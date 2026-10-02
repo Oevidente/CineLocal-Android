@@ -360,6 +360,36 @@ apiRouter.post('/library/mark-watched', (req: Request, res: Response) => {
   res.json({ success: ok });
 });
 
+// 7.5 Export M3U for VLC / External players
+apiRouter.get('/media/:mediaId/episode/:episodeId/export-m3u', (req: Request, res: Response) => {
+  const { mediaId, episodeId } = req.params;
+  const pair = findEpisode(mediaId, episodeId);
+  if (!pair) {
+    res.status(404).send('Episódio não encontrado');
+    return;
+  }
+
+  const { media, episode } = pair;
+  const host = req.headers.host || `localhost:${process.env.PORT || 3000}`;
+  const protocol = req.protocol || 'http';
+  const streamUrl = `${protocol}://${host}/api/media/${media.id}/episode/${episode.id}/stream`;
+  const title =
+    media.kind === 'series'
+      ? `${media.title} - S${String(episode.seasonNumber).padStart(2, '0')}E${String(episode.episodeNumber).padStart(2, '0')} - ${episode.title}`
+      : `${media.title}`;
+
+  let m3u = '#EXTM3U\n';
+  m3u += `#EXTINF:-1,${title}\n`;
+  m3u += `${streamUrl}\n`;
+
+  res.setHeader('Content-Type', 'audio/x-mpegurl');
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="${encodeURIComponent(title.replace(/[^a-zA-Z0-9_-]/g, '_'))}.m3u"`,
+  );
+  res.send(m3u);
+});
+
 // 8. Stream video (Direct HTTP 206 Range for native MP4/WebM, or ffmpeg remux/transcode for MKV/audio track)
 apiRouter.get('/media/:mediaId/episode/:episodeId/stream', (req: Request, res: Response) => {
   const { mediaId, episodeId } = req.params;
@@ -1227,9 +1257,13 @@ apiRouter.get('/system/cast-info', (req: Request, res: Response) => {
     })
     .map((entry) => entry.address);
 
+  const fallbackPort = Number(process.env.PORT) || 3000;
+  const configuredPort = Number(req.app.locals.castMediaPort) || fallbackPort;
+  const configuredProtocol = req.app.locals.castMediaProtocol || 'http';
+
   res.json({
-    protocol: req.app.locals.castMediaProtocol || null,
-    port: Number(req.app.locals.castMediaPort) || null,
+    protocol: configuredProtocol,
+    port: configuredPort,
     addresses: [...new Set(addresses)],
   });
 });
@@ -1639,6 +1673,29 @@ apiRouter.get('/torrent/stream/:infoHash/:fileIndex', async (req: Request, res: 
       stream.destroy();
     } catch {}
   });
+});
+
+// 4.45 Export M3U for torrent file (for VLC and external players)
+apiRouter.get('/torrent/export-m3u/:infoHash/:fileIndex', (req: Request, res: Response) => {
+  const { infoHash, fileIndex } = req.params;
+  const parsedIdx = parseInt(fileIndex, 10);
+  const status = getTorrentStatus(infoHash);
+  const file = getTorrentFile(infoHash, isNaN(parsedIdx) ? 0 : parsedIdx);
+  const host = req.headers.host || `localhost:${process.env.PORT || 3000}`;
+  const protocol = req.protocol || 'http';
+  const streamUrl = `${protocol}://${host}/api/torrent/stream/${infoHash}/${isNaN(parsedIdx) ? 0 : parsedIdx}`;
+  const title = file?.name || status?.name || 'Torrent Stream';
+
+  let m3u = '#EXTM3U\n';
+  m3u += `#EXTINF:-1,${title}\n`;
+  m3u += `${streamUrl}\n`;
+
+  res.setHeader('Content-Type', 'audio/x-mpegurl');
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="${encodeURIComponent(title.replace(/[^a-zA-Z0-9_-]/g, '_'))}.m3u"`,
+  );
+  res.send(m3u);
 });
 
 // 4.5. Update media kind (movie vs series)

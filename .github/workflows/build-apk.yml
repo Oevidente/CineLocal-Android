@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-android:
@@ -78,3 +78,18 @@ jobs:
           name: CineLocal-Android-APK
           path: output-apk/CineLocal-Android.apk
           retention-days: 30
+
+      - name: Publicar APK na aba Releases (Download com 1 Clique)
+        uses: softprops/action-gh-release@v2
+        if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        with:
+          tag_name: app-latest
+          name: CineLocal Android - APK Atualizado
+          body: |
+            ### 🎬 CineLocal para Android
+            Arquivo APK pronto para instalar no seu celular ou TV box Android.
+            
+            - **Download direto:** Toque em `CineLocal-Android.apk` abaixo dos Assets para baixar.
+          files: output-apk/CineLocal-Android.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
